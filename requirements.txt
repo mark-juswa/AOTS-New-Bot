@@ -1,0 +1,6 @@
+py-cord==2.5.0
+pandas
+python-binance
+nest_asyncio
+pytz
+flask
