@@ -10,6 +10,7 @@ import nest_asyncio
 from typing import cast
 from flask import Flask
 from threading import Thread
+import requests
 
 # Enable logging
 logging.basicConfig(level=logging.INFO)
@@ -20,43 +21,48 @@ CHANNEL_ID = 1411642002319347784
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-if not all([DISCORD_TOKEN, BINANCE_API_KEY, BINANCE_API_SECRET]):
-    raise ValueError("❌ Missing environment variables! Please set DISCORD_TOKEN, BINANCE_API_KEY, BINANCE_API_SECRET.")
-
-client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, testnet=True)
-
-
 TIMEFRAME = "1d"
 KLIMIT = 150
 SLEEP_SECONDS = 3600
 MAX_FIELD_CHAR = 1000
 MAX_EMBED_FIELDS = 20
-REQUEST_SLEEP = 0.05
+REQUEST_SLEEP = 0.1
 
-# --- Load SPOT Symbols (instead of futures) ---
-exchange_info = client.get_exchange_info()
-spot_symbols = [
-    s["symbol"] for s in exchange_info["symbols"]
-    if s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING"
-]
-logging.info(f"{len(spot_symbols)} USDT spot symbols loaded.")
+# --- Load USDT trading pairs from CoinGecko ---
+def get_usdt_pairs():
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": 250,
+        "page": 1,
+        "sparkline": False
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json()
+        return [coin["symbol"].upper() for coin in data]
+    except Exception as e:
+        logging.error(f"Error fetching CoinGecko pairs: {e}")
+        return []
+
+spot_symbols = get_usdt_pairs()
+logging.info(f"{len(spot_symbols)} symbols loaded from CoinGecko.")
 
 # --- Indicator calculation ---
 def get_indicators(symbol: str):
+    url = f"https://api.coingecko.com/api/v3/coins/{symbol.lower()}/market_chart"
+    params = {"vs_currency": "usd", "days": 150, "interval": "daily"}
     try:
-        candles = client.get_klines(symbol=symbol, interval=TIMEFRAME, limit=KLIMIT)
-        if not candles:
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json()
+        prices = [p[1] for p in data.get("prices", [])]
+        if not prices:
             return None
-        column_names = [
-            'time', 'open', 'high', 'low', 'close',
-            'volume', 'close_time', 'quote_asset_volume',
-            'num_trades', 'taker_buy_base', 'taker_buy_quote', 'ignore'
-        ]
-        df = pd.DataFrame(candles, columns=column_names)
-        df['close'] = df['close'].astype(float)
-        df['MA20'] = df['close'].rolling(20, min_periods=1).mean()
-        df['MA50'] = df['close'].rolling(50, min_periods=1).mean()
-        df['MA100'] = df['close'].rolling(100, min_periods=1).mean()
+        df = pd.DataFrame(prices, columns=["close"])
+        df["MA20"] = df["close"].rolling(20, min_periods=1).mean()
+        df["MA50"] = df["close"].rolling(50, min_periods=1).mean()
+        df["MA100"] = df["close"].rolling(100, min_periods=1).mean()
         return df.iloc[-1]
     except Exception as e:
         logging.debug(f"get_indicators({symbol}) error: {e}")
@@ -67,7 +73,7 @@ def is_aots(symbol: str):
     if latest is None:
         return False
     try:
-        return latest['MA20'] > latest['MA50'] > latest['MA100']
+        return latest["MA20"] > latest["MA50"] > latest["MA100"]
     except Exception:
         return False
 
@@ -114,7 +120,7 @@ async def on_ready():
             tier2 = []
             for sym in spot_symbols:
                 if is_aots(sym):
-                    tier2.append(sym.replace("USDT", ""))
+                    tier2.append(sym.upper())
                 await asyncio.sleep(REQUEST_SLEEP)  # avoid API bans
 
             manila = pytz.timezone("Asia/Manila")
@@ -122,7 +128,7 @@ async def on_ready():
 
             embed = discord.Embed(
                 title=f"Automated AOTS Spot Setups — {now}",
-                description="**🎯 Tier 2 (AOTS)**\n20MA > 50MA > 100MA\nUSDT Spot Market",
+                description="**🎯 Tier 2 (AOTS)**\n20MA > 50MA > 100MA\nSpot Market (CoinGecko)",
                 color=0x00ff00
             )
 
@@ -146,23 +152,16 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is running!"
+    return "Bot is running with CoinGecko!"
 
 def run_web():
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
 
 # --- Main execution ---
 def start():
-    # Apply nest_asyncio to allow asyncio to be re-entered
     nest_asyncio.apply()
-
-    # Get the event loop
     loop = asyncio.get_event_loop()
-
-    # Create a task for the bot
     bot_task = loop.create_task(bot.start(DISCORD_TOKEN))
-
-    # Run both the Flask server and the bot concurrently
     try:
         loop.run_until_complete(bot_task)
     except KeyboardInterrupt:
@@ -171,9 +170,6 @@ def start():
         loop.run_until_complete(bot.close())
 
 if __name__ == "__main__":
-    # Start the Flask server in a separate thread
     web_thread = Thread(target=run_web)
     web_thread.start()
-    
-    # Start the bot
     start()
