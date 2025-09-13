@@ -11,6 +11,7 @@ from typing import cast
 from flask import Flask
 from threading import Thread
 
+# Enable logging
 logging.basicConfig(level=logging.INFO)
 
 # --- CONFIG ---
@@ -19,7 +20,7 @@ CHANNEL_ID = 1411642002319347784
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-if not DISCORD_TOKEN or not BINANCE_API_KEY or not BINANCE_API_SECRET:
+if not all([DISCORD_TOKEN, BINANCE_API_KEY, BINANCE_API_SECRET]):
     raise ValueError("❌ Missing environment variables! Please set DISCORD_TOKEN, BINANCE_API_KEY, BINANCE_API_SECRET.")
 
 client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
@@ -50,7 +51,7 @@ def get_indicators(symbol: str):
             'volume', 'close_time', 'quote_asset_volume',
             'num_trades', 'taker_buy_base', 'taker_buy_quote', 'ignore'
         ]
-        df = pd.DataFrame(candles, columns=column_names)  # type: ignore
+        df = pd.DataFrame(candles, columns=column_names)
         df['close'] = df['close'].astype(float)
         df['MA20'] = df['close'].rolling(20, min_periods=1).mean()
         df['MA50'] = df['close'].rolling(50, min_periods=1).mean()
@@ -147,17 +148,31 @@ def home():
     return "Bot is running!"
 
 def run_web():
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
 
-Thread(target=run_web).start()
-
+# --- Main execution ---
 def start():
+    # Apply nest_asyncio to allow asyncio to be re-entered
+    nest_asyncio.apply()
+
+    # Get the event loop
+    loop = asyncio.get_event_loop()
+
+    # Create a task for the bot
+    bot_task = loop.create_task(bot.start(DISCORD_TOKEN))
+
+    # Run both the Flask server and the bot concurrently
     try:
-        asyncio.run(bot.start(DISCORD_TOKEN))
-    except RuntimeError:
-        nest_asyncio.apply()
-        loop = asyncio.get_event_loop()
-        loop.create_task(bot.start(DISCORD_TOKEN))
+        loop.run_until_complete(bot_task)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.run_until_complete(bot.close())
 
 if __name__ == "__main__":
+    # Start the Flask server in a separate thread
+    web_thread = Thread(target=run_web)
+    web_thread.start()
+    
+    # Start the bot
     start()
