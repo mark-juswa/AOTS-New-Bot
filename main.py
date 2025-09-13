@@ -23,7 +23,8 @@ BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 if not all([DISCORD_TOKEN, BINANCE_API_KEY, BINANCE_API_SECRET]):
     raise ValueError("❌ Missing environment variables! Please set DISCORD_TOKEN, BINANCE_API_KEY, BINANCE_API_SECRET.")
 
-client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, testnet=True)
+
 
 TIMEFRAME = "1d"
 KLIMIT = 150
